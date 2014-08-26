@@ -1,4 +1,4 @@
-simplebox
-=========
+tinybox
+=======
 
-A simple sandbox program written in C.
+A simple sandbox program.
