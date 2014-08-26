@@ -26,11 +26,13 @@ def log(msg):
 	print(msg, file = sys.stderr)
 
 def print_usage():
-	print('Usage: tinybox [-h] [-p path] [-c path] [-c.<control>.<key>=<val>] -- cmd [args]')
+	print('Usage: tinybox [-h] [-p path] [-c path] [-c.<control>.<key>=<val>] [-r user] [-t sec] -- cmd [args]')
 	print(' -h, --help			Display this help information')
 	print(' -p, --path			Specify the cgroup path')
 	print(' -c, --cgconf			Load cgroup limits from the given file path')
 	print(' -c.<control>.<key>=<val>	Add cgroup limit <control>.<key>=<val>')
+	print(' -r, --run-as			Run the command as the specified user')
+	print(' -t, --timeout			Kill the cmd to run after the specified seconds')
 	print(' --				Separate tinybox args with command to run')
 	print(' cmd [args]			The command to execute inside tinybox')
 	print('')
@@ -47,9 +49,12 @@ def add_cgset_cmd(controllers, path, config):
 			args = args + ['-r', c + '.' + k + '=' + str(config[c][k])]
 	shell_script.append('cgset ' + ' '.join(args) + ' ' + path)
 
-def add_cgexec_cmd(controllers, path, cmd):
+def add_cgexec_cmd(controllers, path, cmd, runas = None, timeout = 0):
 	if cmd == None or cmd == '' or len(cmd) == 0: return
-	shell_script.append('cgexec -g ' + ','.join(controllers) + ':' + path + ' --sticky ' + ' '.join(cmd))
+	cmd = ' '.join(cmd)
+	if runas != None: cmd = 'su ' + runas + ' -c ' + cmd
+	if timeout > 0: cmd = 'timeout --signal=9 ' + str(timeout) + ' ' + cmd
+	shell_script.append('cgexec -g ' + ','.join(controllers) + ':' + path + ' --sticky ' + cmd)
 
 def add_cgdelete_cmd(controllers, path):
 	shell_script.append('cgdelete -r -g ' + ','.join(controllers) + ':' + path + '')
@@ -57,8 +62,8 @@ def add_cgdelete_cmd(controllers, path):
 def run_shell_script(script, stdin = None):
 	script = '\n'.join(shell_script) + '\n'
 	print(script)
-	subp = subprocess.Popen(script, shell = True, stdin = subprocess.PIPE, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
-	oe = subp.communicate(bytes(stdin, 'utf-8'))
+	subp = subprocess.Popen(script, shell = True, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
+	oe = subp.communicate()
 	ret = subp.wait()
 	print('ret: ' + str(ret))
 	print('stdout:\n' + oe[0].decode('utf-8'))
@@ -69,6 +74,9 @@ def main():
 	argc = len(sys.argv)
 	
 	cgroup_path = TINYBOX_PREFIX + '/task_' + current_pid
+	runas_username = None
+	timeout = 0
+	
 	while i < argc:
 		arg = sys.argv[i]
 		if arg in ['-h', '--help']:
@@ -101,6 +109,19 @@ def main():
 				log('Argument "' + arg + '" is not a valid cgroup param.')
 			else:
 				cgroup_config[ck_tokens[0]][ck_tokens[1]] = kv_tokens[1]
+		elif arg in ['-t', '--timeout']:
+			i = i + 1
+			try:
+				timeout = int(sys.argv[i])
+			except:
+				log('Argument "-t" should be followed by an interger.')
+				exit(1)
+		elif arg in ['-r', '--run-as']:
+			i = i + 1
+			try: runas_username = sys.argv[i]
+			except:
+				log('Argument "-t" should be followed by an interger.')
+				exit(1)
 		elif arg == '--':
 			i = i + 1	
 			break
@@ -119,15 +140,10 @@ def main():
 	
 	add_cgcreate_cmd(controllers, cgroup_path)
 	add_cgset_cmd(controllers, cgroup_path, cgroup_config)
-	
-	add_cgexec_cmd(controllers, cgroup_path, cmd)
-	add_cgexec_cmd(controllers, cgroup_path, ['pwd'])
-	add_cgexec_cmd(controllers, cgroup_path, ['ls', '-asl'])
-	add_cgexec_cmd(controllers, cgroup_path, ['cat'])
-	
+	add_cgexec_cmd(controllers, cgroup_path, cmd, runas_username, timeout)
 	add_cgdelete_cmd(controllers, cgroup_path)
 	
-	run_shell_script(shell_script, stdin = 'hi')
+	run_shell_script(shell_script)
 	
 
 if __name__ == '__main__':
