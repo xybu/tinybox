@@ -8,6 +8,7 @@ A simple cgroup wrapper written in Python
 
 import os
 import sys
+import shlex
 import subprocess
 import configparser
 
@@ -39,43 +40,45 @@ def print_usage():
 	print('The cgroup conf file should be a file with ini format like ')
 	print('[cpu]\n shares = 500\n[memory]\n limit_in_bytes = 1M\n')
 
-def add_cgcreate_cmd(controllers, path, t_user = current_user, a_user = current_user):
-	shell_script.append('cgcreate -g ' + ','.join(controllers) + ':' + path)
+def cgroup_create(controllers, path, t_user = current_user, a_user = current_user):
+	cmd = ['cgcreate', '-t', t_user + ':root', '-a', a_user + ':' + a_user, '-g', ','.join(controllers) + ':' + path]
+	execute_cmd(cmd)
+	# shell_script.append(' '.join(cmd))
 
-def add_cgset_cmd(controllers, path, config):
+def cgroup_set(controllers, path, config):
 	args = []
 	for c in controllers:
 		for k in config[c]:
 			args = args + ['-r', c + '.' + k + '=' + str(config[c][k])]
-	shell_script.append('cgset ' + ' '.join(args) + ' ' + path)
+	args = ['cgset'] + args + [path]
+	execute_cmd(args)
+	# shell_script.append('cgset ' + ' '.join(args) + ' ' + path)
 
-def add_cgexec_cmd(controllers, path, cmd, runas = None, timeout = 0):
+def cgroup_exec(controllers, path, cmd, runas = None, timeout = None):
 	if cmd == None or cmd == '' or len(cmd) == 0: return
-	cmd = ' '.join(cmd)
-	if runas != None: cmd = 'su ' + runas + ' -c ' + cmd
-	if timeout > 0: cmd = 'timeout --signal=9 ' + str(timeout) + ' ' + cmd
-	shell_script.append('cgexec -g ' + ','.join(controllers) + ':' + path + ' --sticky ' + cmd)
+	# if timeout > 0: cmd = 'timeout --signal=9 ' + str(timeout) + ' sh -c ' + shlex.quote(cmd)
+	if runas != None: cmd = ['su', runas, '--preserve-environment', '-c', shlex.quote(' '.join(cmd))]
+	cmd = 'cgexec -g ' + ','.join(controllers) + ':' + path + ' --sticky ' + ' '.join(cmd)
+	execute_cmd(cmd, shell = True, timeout = timeout)
+	#shell_script.append(cmd)
 
-def add_cgdelete_cmd(controllers, path):
-	shell_script.append('cgdelete -r -g ' + ','.join(controllers) + ':' + path + '')
+def cgroup_delete(controllers, path):
+	execute_cmd(['cgdelete', '-r', '-g', ','.join(controllers) + ':' + path + ''])
 
-def run_shell_script(script, stdin = None):
-	script = '\n'.join(shell_script) + '\n'
-	print(script)
-	subp = subprocess.Popen(script, shell = True, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
-	oe = subp.communicate()
-	ret = subp.wait()
-	print('ret: ' + str(ret))
-	print('stdout:\n' + oe[0].decode('utf-8'))
-	print('stderr:\n' + oe[1].decode('utf-8'))
+def execute_cmd(cmd, shell = False, timeout = None):
+	if timeout == 0: timeout = None
+	try:
+		subprocess.call(cmd, shell = shell, timeout = timeout)
+	except subprocess.TimeoutExpired:
+		log('Execution timeout.')
 
 def main():
 	i = 1
 	argc = len(sys.argv)
 	
 	cgroup_path = TINYBOX_PREFIX + '/task_' + current_pid
-	runas_username = None
-	timeout = 0
+	runas_username = current_user
+	timeout = None
 	
 	while i < argc:
 		arg = sys.argv[i]
@@ -108,12 +111,16 @@ def main():
 			if len(kv_tokens) != 2 or len(ck_tokens) != 2:
 				log('Argument "' + arg + '" is not a valid cgroup param.')
 			else:
+				if ck_tokens[0] not in cgroup_config:
+					cgroup_config.add_section(ck_tokens[0])
 				cgroup_config[ck_tokens[0]][ck_tokens[1]] = kv_tokens[1]
 		elif arg in ['-t', '--timeout']:
 			i = i + 1
 			try:
 				timeout = int(sys.argv[i])
-			except:
+				if 'cpuacct' not in cgroup_config:
+					cgroup_config.add_section('cpuacct')
+			except (ValueError, IndexError) as e:
 				log('Argument "-t" should be followed by an interger.')
 				exit(1)
 		elif arg in ['-r', '--run-as']:
@@ -138,13 +145,10 @@ def main():
 		log('No cgroup limit set. Why do you use tinybox?')
 		sys.exit(1)
 	
-	add_cgcreate_cmd(controllers, cgroup_path)
-	add_cgset_cmd(controllers, cgroup_path, cgroup_config)
-	add_cgexec_cmd(controllers, cgroup_path, cmd, runas_username, timeout)
-	add_cgdelete_cmd(controllers, cgroup_path)
-	
-	run_shell_script(shell_script)
-	
+	cgroup_create(controllers, cgroup_path, t_user = runas_username, a_user = runas_username)
+	cgroup_set(controllers, cgroup_path, cgroup_config)
+	cgroup_exec(controllers, cgroup_path, cmd, runas_username, timeout)
+	cgroup_delete(controllers, cgroup_path)
 
 if __name__ == '__main__':
 	main()
